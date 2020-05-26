@@ -1,562 +1,574 @@
+#Requires -Version 3
+
 <#
-.SYNOPSIS
-	Sets information during OSD.
-   
-.DESCRIPTION 
-    This script will add build, task sequence, and other information to the OS so that it can later be examined or inventoried.
+    .SYNOPSIS
+    Records the requested deployment information into the system during operating system deployment (OSD).
+          
+    .DESCRIPTION
+    This script will add build, task sequence, and other information to the operating system so that it can later be examined or inventoried. That data can then be used as the driving force behind SCCM collections, and or SCCM reports.
     Information can be added to the registry, WMI, or both.
+          
+    .PARAMETER Registry
+    Records the requested deployment information into the registry for later examination or usage.
 
-.PARAMETER Registry
-    This switch will add information to the following location:
-        - Registry
+    .PARAMETER RegistryKeyPath
+    Specifies the registry key path where the requested deployment information will be recorded when the registry parameter is specified. Input will be validated by a regular expression that forces the specified path to start with a registry hive location, followed by a colon, a backslash, and finally the path you want after that.
+    Example: "HKLM:\Software\SomeRegistryPath"
 
-.PARAMETER WMI
-    This switch will add information to the following location:
-        - WMI Repository
-    
-.EXAMPLE
-     Set-OSDInfo.ps1 -WMI -Registry
-
-     Will add all information to the following locations:
-        - Registry
-        - WMI Repository 
-
-.NOTES
-    Modified from the versions by Stephane van Gulick from www.powershellDistrict.com
-	V1.1, 2016-5-6: Added, values for Dtae/Time, OS Image ID, UEFI, and Launch Mode
-
-.LINK
-	http://blog.configmgrftw.com
-	
-#>
-[cmdletBinding()]
-Param(
-        [Parameter(Mandatory=$false)][switch]$WMI,
-        [Parameter(Mandatory=$false)][switch]$Registry,
-        [Parameter(Mandatory=$false)][String]$Namespace = "ITLocal",
-        [Parameter(Mandatory=$false)][String]$Class = "OSD_Info",
-        [Parameter(Mandatory=$true)][String]$ID,
-        [Parameter(Mandatory=$false)][String]$AttributePrefix = "OSDInfo_"
-)
-
-Function Get-WMINamespace
-{
-  <#
-	.SYNOPSIS
-		Gets information about a specified WMI namespace.
-
-	.DESCRIPTION
-		Returns information about a specified WMI namespace.
-
-    .PARAMETER  Namespace
-		Specify the name of the namespace where the class resides in (default is "root\cimv2").
-
-	.EXAMPLE
-		Get-WMINamespace
-        Lists all WMI namespaces.
-
-	.EXAMPLE
-		Get-WMINamespace -Namespace cimv2
-        Returns the cimv2 namespace.
-
-	.NOTES
-		Version: 1.0
-
-	.LINK
-		http://blog.configmgrftw.com
-
-#>
-[CmdletBinding()]
-	Param
-    (
-        [Parameter(Mandatory=$false,valueFromPipeLine=$true)][string]$Namespace
-	)  
-    begin
-	{
-		Write-Verbose "Getting WMI namespace $Namespace"
-    }
-    Process
-	{
-        if ($Namespace)
-        {
-            $filter = "Name = '$Namespace'"
-            $return = Get-WmiObject -Namespace "root" -Class "__namespace" -filter $filter
-        }
-		else
-		{
-            $return = Get-WmiObject -Namespace root -Class __namespace
-        }
-    }
-    end
-	{
-        return $return
-    }
-}
-
-Function New-WMINamespace
-{
-<#
-	.SYNOPSIS
-		This function creates a new WMI namespace.
-
-	.DESCRIPTION
-		The function creates a new WMI namespsace.
+    .PARAMETER WMI
+    Records the requested deployment information into WMI for later examination or usage.
 
     .PARAMETER Namespace
-		Specify the name of the namespace that you would like to create.
+    A valid WMI namespace. If the WMI namespace does not exist, it will be created.
 
-	.EXAMPLE
-		New-WMINamespace -Namespace "ITLocal"
-        Creates a new namespace called "ITLocal"
-		
-	.NOTES
-		Version: 1.0
+    .PARAMETER Class
+    A valid WMI class. If the WMI class does not exist, it will be created. The class will be removed and recreated if it exists!
 
-	.LINK
-		http://blog.configmgrftw.com
+    .PARAMETER ClassDescription
+    A valid string. This string will be set as the WMI class description.
 
-#>
-[CmdletBinding()]
-	Param(
-        [Parameter(Mandatory=$true,valueFromPipeLine=$true)][string]$Namespace
-	)
+    .PARAMETER OSDVariablePrefix
+    Any valid string that will be used as the attribute prefix.
+    If you create a task sequence during operating system deployment and prefix the task sequence variable name with what is specified in this parameter, that task sequence variable will be dynamically detected by this script and included as part of information recorded within WMI or the registry without additional modification of this script.
+    This parameter will be validated using a regular expression to ensure that the string ends with an underscore and is formatted like the following. Example: "MyOSDVariablePrefix_"
 
-	if (!(Get-WMINamespace -Namespace "$Namespace"))
-	{
-		Write-Verbose "Attempting to create namespace $($Namespace)"
-
-		$newNamespace = ""
-		$rootNamespace = [wmiclass]'root:__namespace'
-        $newNamespace = $rootNamespace.CreateInstance()
-		$newNamespace.Name = $Namespace
-		$newNamespace.Put() | out-null
-		
-		Write-Verbose "Namespace $($Namespace) created."
-
-	}
-	else
-	{
-		Write-Verbose "Namespace $($Namespace) is already present. Skipping.."
-	}
-}
-
-Function Get-WMIClass
-{
-  <#
-	.SYNOPSIS
-		Gets information about a specified WMI class.
-
-	.DESCRIPTION
-		Returns the listing of a WMI class.
-
-	.PARAMETER  ClassName
-		Specify the name of the class that needs to be queried.
-
-    .PARAMETER  Namespace
-		Specify the name of the namespace where the class resides in (default is "root\cimv2").
-
-	.EXAMPLE
-		get-wmiclass
-        List all the Classes located in the root\cimv2 namespace (default location).
-
-	.EXAMPLE
-		get-wmiclass -classname win32_bios
-        Returns the Win32_Bios class.
-
-	.EXAMPLE
-		get-wmiclass -Class MyCustomClass
-        Returns information from MyCustomClass class located in the default namespace (root\cimv2).
-
-    .EXAMPLE
-		Get-WMIClass -Namespace ccm -Class *
-        List all the classes located in the root\ccm namespace
-
-	.EXAMPLE
-		Get-WMIClass -NameSpace ccm -Class ccm_client
-        Returns information from the cm_client class located in the root\ccm namespace.
-
-	.NOTES
-		Version: 1.0
-
-	.LINK
-		http://blog.configmgrftw.com
-
-#>
-[CmdletBinding()]
-	Param
-	(
-		[Parameter(Mandatory=$false,valueFromPipeLine=$true)][string]$Class,
-        [Parameter(Mandatory=$false)][string]$Namespace = "cimv2"
-	)  
-    begin
-	{
-		Write-Verbose "Getting WMI class $Class"
-    }
-    Process
-	{
-		if (Get-WMINamespace -Namespace $Namespace)
-		{
-			$namespaceFullName = "root\$Namespace"
-
-            Write-Verbose $namespaceFullName
-		
-			if (!$Class)
-			{
-				$return = Get-WmiObject -Namespace $namespaceFullName -Class * -list
-			}
-			else
-			{
-				$return = Get-WmiObject -Namespace $namespaceFullName -Class $Class -list
-			}
-		}
-		else
-		{
-			Write-Verbose "WMI namespace $Namespace does not exist."
-			
-			$return = $null
-		}
-    }
-    end
-	{
-        return $return
-    }
-}
-
-Function New-WMIClass
-{
-<#
-	.SYNOPSIS
-		This function creates a new WMI class.
-
-	.DESCRIPTION
-		The function create a new WMI class in the specified namespace.
-        It does not create a new namespace however.
-
-	.PARAMETER Class
-		Specify the name of the class that you would like to create.
-
-    .PARAMETER Namespace
-		Specify the namespace where class the class should be created.
-        If not specified, the class will automatically be created in "root\cimv2"
-
-    .PARAMETER Attributes
-		Specify the attributes for the new class.
-
-    .PARAMETER Key
-		Specify the names of the key attribute (or attributes) for the new class.
-
-	.EXAMPLE
-		New-WMIClass -ClassName "OSD_Info"
-        Creates a new class called "OSD_Info"
-    .EXAMPLE
-        New-WMIClass -ClassName "OSD_Info1","OSD_Info2"
-        Creates two classes called "OSD_Info1" and "OSD_Info2" in the root\cimv2 namespace
-
-	.NOTES
-		Version: 1.0
-
-	.LINK
-		http://blog.configmgrftw.com
-
-#>
-[CmdletBinding()]
-	Param(
-		[Parameter(Mandatory=$true,valueFromPipeLine=$true)][string]$Class,
-        [Parameter(Mandatory=$false)][string]$Namespace = "cimv2",
-        [Parameter(Mandatory=$false)][System.Management.Automation.PSVariable[]]$Attributes,
-        [Parameter(Mandatory=$false)][string[]]$Key
-	)
-
-	$namespaceFullName = "root\$Namespace"
-	
-	if (!(Get-WMINamespace -Namespace $Namespace))
-	{
-		Write-Verbose "WMI namespace $Namespace does not exist."
-
-	}
-
-    elseif (!(Get-WMIClass -Class $Class -NameSpace $Namespace))
-	{
-		Write-Verbose "Attempting to create class $($Class)"
-			
-		$newClass = ""
-		$newClass = New-Object System.Management.ManagementClass($namespaceFullName, [string]::Empty, $null)
-		$newClass.name = $Class
-
-        foreach ($attr in $Attributes)
-        {
-            $attr.Name -match "$AttributePrefix(?<attributeName>.*)" | Out-Null
-            $attrName = $matches['attributeName']
-
-            $newClass.Properties.Add($attrName, [System.Management.CimType]::String, $false)
-            Write-Verbose "   added attribute: $attrName"
-        }
-
-        foreach ($keyAttr in $Key)
-        {
-            $newClass.Properties[$keyAttr].Qualifiers.Add("Key", $true)
-            Write-Verbose "   added key: $keyAttr"
-        }
-
-
-		$newClass.Put() | out-null
-			
-		Write-Verbose "Class $($Class) created."
-	}
-	else
-	{
-		Write-Verbose "Class $($Class) is already present. Skipping..."
-    }
-
-}
-
-Function New-WMIClassInstance
-{
-    <#
-	.SYNOPSIS
-		Creates a new WMI class instance.
-
-	.DESCRIPTION
-		The function creates a new instance of the specified WMI class.
-
-	.PARAMETER  Class
-		Specify the name of the class to create a new instance of.
-
-	.PARAMETER Namespace
-        Specify the name of the namespace where the class is located (default is Root\cimv2).
-
-	.PARAMETER Attributes
-        Specify the attributes and their values using PSVariables.
-
-	.EXAMPLE
-        $MyNewInstance = New-WMIClassInstance -Class OSDInfo
-        
-        Creates a new instance of the WMI class "OSDInfo" and sets its attributes.
-		
-	.NOTES
-		Version: 1.0
-
-	.LINK
-		http://blog.configmgrftw.com
-
-#>
-
-[CmdletBinding()]
-	Param
-    (
-		[Parameter(Mandatory=$true)]
-        [ValidateScript({
-            $_ -ne ""
-        })][string]$Class,
-        [Parameter(Mandatory=$false)][string]$Namespace="cimv2",
-        [Parameter(Mandatory=$false)][System.Management.Automation.PSVariable[]]$Attributes
-	)
-
-    $classPath = "root\$($Namespace):$($Class)"
-    $classObj = [wmiclass]$classPath
-    $classInstance = $classObj.CreateInstance()
-
-    Write-Verbose "Created instance of $Class class."
-
-    foreach ($attr in $Attributes)
-    {
-        $attr.Name -match "$AttributePrefix(?<attributeName>.*)" | Out-Null
-        $attrName = $matches['attributeName']
-
-        if ($attr.Value) 
-        {
-            $attrVal = $attr.Value
-        } 
-        else 
-        {
-            $attrVal = ""
-        }
-
-        $classInstance[$attrName] = $attrVal
-        Write-Verbose "   added attribute value for $($attrName): $($attrVal)"
-    }
-
-    $classInstance.Put()
-}
-
-Function New-RegistryItem
-{
-<#
-.SYNOPSIS
-	Sets a registry value in the specified key under HKLM\Software.
-   
-.DESCRIPTION 
-    Sets a registry value in the specified key under HKLM\Software.
-	
-	
-.PARAMETER Key
-    Species the registry path under HKLM\SOFTWARE\ to create.
-    Defaults to OperatingSystemDeployment.
-
-
-.PARAMETER ValueName
-    This parameter specifies the name of the Value to set.
-
-.PARAMETER Value
-    This parameter specifies the value to set.
+    .PARAMETER DestinationTimeZoneID
+    A valid string. Specify a time zone ID that exists on the current system. Input will be validated against the list of time zones available on the system.
+    All date/time operations within this script will converted the current system time to the destination timezone for standardization. That time will then be converted to UTC. The UTC time will then be converted to the WMI format and stored.
     
-.Example
-     New-RegistryItem -ValueName Test -Value "abc"
+    .PARAMETER LogDir
+    A valid folder path. If the folder does not exist, it will be created. This parameter can also be specified by the alias "LogPath".
+          
+    .EXAMPLE
+    powershell.exe -ExecutionPolicy Bypass -NoProfile -NoLogo -File "%FolderPathContainingScript%\Set-OSDInformation.ps1"
 
-.NOTES
-	-Version: 1.0
-	
+    .EXAMPLE
+    powershell.exe -ExecutionPolicy Bypass -NoProfile -NoLogo -File "%FolderPathContainingScript%\Set-OSDInformation.ps1" -WMI -Namespace "Root\CIMv2" -Class "Custom_OSD_Info" -OSDVariablePrefix "CustomOSDInfo_" -LogDir "%_SMSTSLogPath%\Set-OSDInformation"
+
+    .EXAMPLE
+    powershell.exe -ExecutionPolicy Bypass -NoProfile -NoLogo -File "%FolderPathContainingScript%\Set-OSDInformation.ps1" -Registry -RegistryKeyPath "HKLM:\Software\Microsoft\Deployment\CustomOSDInfo" -OSDVariablePrefix "CustomOSDInfo_" -LogDir "%_SMSTSLogPath%\Set-OSDInformation"
+  
+    .NOTES
+    Additional function(s) are required and will be imported automatically for this script to function properly. Look inside the "%ScriptDirectory%\Functions\Active" folder.
+    When the values get written to WMI, the attribute prefix will be removed automatically so that the value(s) in the registry or WMI will not have that prefix and be easier to read.
+    Create an SCCM package (the legacy kind) that points to the folder containing all file(s)/folder(s) included with this script and simply reference that package during the task sequence by using the "Run Powershell Script" action.
+    All Date/Time values can be converted to the traditional Date/Time format from the WMI Date/Time format by using the following command ([System.Management.ManagementDateTimeConverter]::ToDateTime("YourDateAndTime")). They were placed in this format to allow data sorting and conversion once the data is inventoried, which would not be possible by just using strings.
+          
+    .LINK
+    https://gallery.technet.microsoft.com/Tatoo-custom-information-e1febe32
+
+    .LINK
+    https://powershell.one/wmi/datatypes
+
+    .LINK
+    http://woshub.com/how-to-set-timezone-from-command-prompt-in-windows/
+    
+    .LINK
+    https://devblogs.microsoft.com/scripting/powertip-use-powershell-to-retrieve-the-date-and-time-of-the-given-time-zone-id/
 #>
 
+[CmdletBinding()]
+    Param
+        (        	     
+            [Parameter(Mandatory=$False)]
+            [Switch]$Registry,
 
+            [Parameter(Mandatory=$False)]
+            [ValidateNotNullOrEmpty()]
+            [ValidateScript({($_ -imatch '^.{3,4}\:\\.*$')})]
+            [String]$RegistryKeyPath = "HKLM:\Software\Microsoft\Deployment\CustomOSDInfo",
 
-    [cmdletBinding()]
-    Param(
-
-
-        [Parameter(Mandatory=$false)]
-        [string]$Key = "OperatingSystemDeployment",
-
-        [Parameter(Mandatory=$true)]
-        [string]$ValueName,
-
-        [Parameter(Mandatory=$false)]
-        [string]$Value
-        
-    )
-    begin
-    {
-        $registryPath = "HKLM:SOFTWARE\$($Key)"
-    }
-    Process
-    {
-        if ($registryPath -eq "HKLM:SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\")
-        {
-            write-verbose "The registry path that is tried to be created is the uninstall string.HKLM:SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\."
-            write-verbose "Creating this here would have as consequence to erase the whole content of the Uninstall registry hive."
+            [Parameter(Mandatory=$False)]
+            [Switch]$WMI,
                         
-            exit 
-        }
+            [Parameter(Mandatory=$False)]
+            [ValidateNotNullOrEmpty()]
+            [ValidateScript({($_ -imatch '^Root\\.*')})]
+            [String]$Namespace = "Root\CIMv2",
 
-        ##Creating the registry node
-        if (!(test-path $registryPath))
-        {
-            write-verbose "Creating the registry key at : $($registryPath)."
+            [Parameter(Mandatory=$False)]
+            [ValidateNotNullOrEmpty()]
+            [String]$Class = "Custom_OSD_Info",
             
-            try
-            {
-                New-Item -Path $registryPath -force -ErrorAction stop | Out-Null
-            }
-            catch [System.Security.SecurityException]
-            {
-                write-warning "No access to the registry. Please launch this function with elevated privileges."
-            }
-            catch
-            {
-                write-host "An unknowed error occured : $_ "
-            }
-        }
-        else
-        {
-            write-verbose "The registry key already exists at $($registryPath)"
-        }
+            [Parameter(Mandatory=$False)]
+            [ValidateNotNullOrEmpty()]
+            [String]$ClassDescription = "Contains operating system deployment details that can be inventoried and used for reporting and/or collection criteria purposes.",
 
-        ##Creating the registry string and setting its value
-        write-verbose "Setting the registry string $($ValueName) with value $($Value) at path : $($registryPath) ."
+            [Parameter(Mandatory=$False)]
+            [ValidateNotNullOrEmpty()]
+            [ValidateScript({($_ -imatch '^.*\_$')})]
+            [String]$OSDVariablePrefix = "CustomOSDInfo_",
+            
+            [Parameter(Mandatory=$False)]
+            [ValidateNotNullOrEmpty()]
+            [ValidateScript({($_ -iin ([System.TimeZoneInfo]::GetSystemTimeZones().ID | Sort-Object))})]
+            [String]$DestinationTimeZoneID = "Eastern Standard Time",
+            
+            [Parameter(Mandatory=$False)]
+            [ValidateNotNullOrEmpty()]
+            [ValidateScript({($_ -imatch '^[a-zA-Z][\:]\\.*?[^\\]$')})]
+            [Alias('LogPath')]
+            [System.IO.DirectoryInfo]$LogDir = "$($Env:Windir)\Logs\Software\Set-OSDInformation",
+            
+            [Parameter(Mandatory=$False)]
+            [Switch]$ContinueOnError
+        )
 
-        try
-        {
-            New-ItemProperty -Path $registryPath  -Name $ValueName -PropertyType STRING -Value $Value -Force -ErrorAction Stop | Out-Null
-        }
-        catch [System.Security.SecurityException]
-        {
-            write-host "No access to the registry. Please launch this function with elevated privileges."
-        }
-        catch
-        {
-            write-host "An unknown error occured : $_ "
-        }
+#Define Default Action Preferences
+    $Script:DebugPreference = 'SilentlyContinue'
+    $Script:ErrorActionPreference = 'Stop'
+    $Script:VerbosePreference = 'SilentlyContinue'
+    $Script:WarningPreference = 'Continue'
+    $Script:ConfirmPreference = 'None'
+    
+#Load WMI Classes
+  $Baseboard = Get-WmiObject -Namespace "root\CIMv2" -Class "Win32_Baseboard" -Property * | Select-Object -Property *
+  $Bios = Get-WmiObject -Namespace "root\CIMv2" -Class "Win32_Bios" -Property * | Select-Object -Property *
+  $ComputerSystem = Get-WmiObject -Namespace "root\CIMv2" -Class "Win32_ComputerSystem" -Property * | Select-Object -Property *
+  $OperatingSystem = Get-WmiObject -Namespace "root\CIMv2" -Class "Win32_OperatingSystem" -Property * | Select-Object -Property *
+
+#Retrieve property values
+  $OSArchitecture = $($OperatingSystem.OSArchitecture).Replace("-bit", "").Replace("32", "86").Insert(0,"x").ToUpper()
+
+#Define variable(s)
+  $DateTimeLogFormat = 'dddd, MMMM dd, yyyy hh:mm:ss tt'  ###Monday, January 01, 2019 10:15:34 AM###
+  [ScriptBlock]$GetCurrentDateTimeLogFormat = {(Get-Date).ToString($DateTimeLogFormat)}
+  $DateTimeFileFormat = 'yyyyMMdd_hhmmsstt'  ###20190403_115354AM###
+  [ScriptBlock]$GetCurrentDateTimeFileFormat = {(Get-Date).ToString($DateTimeFileFormat)}
+  [System.IO.FileInfo]$ScriptPath = "$($MyInvocation.MyCommand.Definition)"
+  [System.IO.FileInfo]$ScriptLogPath = "$($LogDir.FullName)\$($ScriptPath.BaseName)_$($GetCurrentDateTimeFileFormat.Invoke()).log"
+  [System.IO.DirectoryInfo]$ScriptDirectory = "$($ScriptPath.Directory.FullName)"
+  [System.IO.DirectoryInfo]$FunctionsDirectory = "$($ScriptDirectory.FullName)\Functions"
+  [System.IO.DirectoryInfo]$ModulesDirectory = "$($ScriptDirectory.FullName)\Modules"
+  $IsWindowsPE = Test-Path -Path 'HKLM:\SYSTEM\ControlSet001\Control\MiniNT' -ErrorAction SilentlyContinue
+	
+#Log task sequence variables if debug mode is enabled within the task sequence
+  Try
+    {
+        [System.__ComObject]$TSEnvironment = New-Object -ComObject "Microsoft.SMS.TSEnvironment"
+              
+        If ($TSEnvironment -ine $Null)
+          {
+              $IsRunningTaskSequence = $True
+          }
+    }
+  Catch
+    {
+        $IsRunningTaskSequence = $False
     }
 
-    End
+#Start transcripting (Logging)
+  Try
     {
+        If ($LogDir.Exists -eq $False) {[Void][System.IO.Directory]::CreateDirectory($LogDir.FullName)}
+        Start-Transcript -Path "$($ScriptLogPath.FullName)" -IncludeInvocationHeader -Force -Verbose
     }
-}
-
-
-try
-{
-    $tsenv = New-Object -COMObject Microsoft.SMS.TSEnvironment
-}
-catch
-{
-	Write-Verbose "Not running in a task sequence."
-}
-
-$keyValue = "ID"
-
-New-Variable -Name "$($AttributePrefix)InstallationDate" -Value $(get-date -uformat "%Y%m%d-%T")
-New-Variable -Name "$($AttributePrefix)$keyValue" -Value $ID
-
-if ($tsenv)
-{
-	$taskSequenceXML = $tsenv.Value("_SMSTSTaskSequence")
-	
-	$imageIDElement = @(Select-Xml -Content $taskSequenceXML -XPath "//variable[@name='ImagePackageID']")
-	
-    New-Variable -Name "$($AttributePrefix)TaskSequenceName" -Value $tsenv.Value("_SMSTSPackageName")
-    New-Variable -Name "$($AttributePrefix)BootImageID" -Value $tsenv.Value("_SMSTSBootImageID")
-    New-Variable -Name "$($AttributePrefix)DeploymentID" -Value $tsenv.Value("_SMSTSPackageID")
-    New-Variable -Name "$($AttributePrefix)InstallationMethod" -Value $tsenv.Value("_SMSTSMediaType")
-    New-Variable -Name "$($AttributePrefix)TaskSequenceID" -Value $tsenv.Value("_SMSTSPackageID")
-    New-Variable -Name "$($AttributePrefix)SiteCode" -Value $tsenv.Value("_SMSTSSiteCode")
-    New-Variable -Name "$($AttributePrefix)LaunchMode" -Value $tsenv.Value("_SMSTSLaunchMode")
-    New-Variable -Name "$($AttributePrefix)UserInitiated" -Value $tsenv.Value("_SMSTSUserStarted")
-    New-Variable -Name "$($AttributePrefix)OsBuildversion" -Value $tsenv.Value("OsBuildVersion")
-	New-Variable -Name "$($AttributePrefix)UEFI" -Value $tsenv.Value("_SMSTSBootUEFI")
-	New-Variable -Name "$($AttributePrefix)LaunchMode" -Value $tsenv.Value("_SMSTSLaunchMode")
-	New-Variable -Name "$($AttributePrefix)OSImageID" -Value $imageIDElement[0].node.InnerText
-	New-Variable -Name "$($AttributePrefix)Date-Time" -Value (Get-Date -Format s)
-	
-    $customInfo = @()
-    $customInfo = $tsenv.getVariables() | where {$_ -match "$($AttributePrefix).*"}
-
-    Foreach ($infoItem in $customInfo)
+  Catch
     {
-        New-Variable -Name $infoItem -Value $tsenv.value($infoItem)
+        If ([String]::IsNullOrEmpty($_.Exception.Message)) {$ExceptionMessage = "$($_.Exception.Errors.Message)"} Else {$ExceptionMessage = "$($_.Exception.Message)"}
+          
+        $ErrorMessage = "[Error Message: $($ExceptionMessage)][ScriptName: $($_.InvocationInfo.ScriptName)][Line Number: $($_.InvocationInfo.ScriptLineNumber)][Line Position: $($_.InvocationInfo.OffsetInLine)][Code: $($_.InvocationInfo.Line.Trim())]"
+        Write-Error -Message "$($ErrorMessage)"
     }
-}
 
-$customAttributes = Get-Variable -Name "$AttributePrefix*"
+#Log any useful information
+  $LogMessage = "IsWindowsPE = $($IsWindowsPE.ToString())"
+  Write-Verbose -Message "$($LogMessage)" -Verbose
 
-if ($PSBoundParameters.ContainsKey("WMI"))
-{
-    New-WMINamespace -Namespace $Namespace
-    New-WMIClass -Namespace $Namespace -Class $Class -Attributes $customAttributes -Key $keyValue
-    New-WMIClassInstance -Namespace $Namespace -Class $Class -Attributes $customAttributes
-}
+  $LogMessage = "Script Path = $($ScriptPath.FullName)"
+  Write-Verbose -Message "$($LogMessage)" -Verbose
 
-if ($PSBoundParameters.ContainsKey("Registry"))
-{
-    foreach ($attr in $customAttributes)
+  $DirectoryVariables = Get-Variable | Where-Object {($_.Value -ine $Null) -and ($_.Value -is [System.IO.DirectoryInfo])}
+  
+  ForEach ($DirectoryVariable In $DirectoryVariables)
     {
-        $attr.Name -match "$AttributePrefix(?<attributeName>.*)" | Out-Null
-        $attrName = $matches['attributeName']
+        $LogMessage = "$($DirectoryVariable.Name) = $($DirectoryVariable.Value.FullName)"
+        Write-Verbose -Message "$($LogMessage)" -Verbose
+    }
 
-        if ($attr.Value) 
+#region Import Dependency Modules
+$Modules = Get-Module -Name "$($ModulesDirectory.FullName)\*" -ListAvailable -ErrorAction Stop 
+
+$ModuleGroups = $Modules | Group-Object -Property @('Name')
+
+ForEach ($ModuleGroup In $ModuleGroups)
+  {
+      $LatestModuleVersion = $ModuleGroup.Group | Sort-Object -Property @('Version') -Descending | Select-Object -First 1
+      
+      If ($LatestModuleVersion -ine $Null)
         {
-            $attrVal = $attr.Value
-        } 
-        else 
-        {
-            $attrVal = ""
+            $LogMessage = "Attempting to import dependency powershell module `"$($LatestModuleVersion.Name) [Version: $($LatestModuleVersion.Version.ToString())]`". Please Wait..."
+            Write-Verbose -Message "$($LogMessage)" -Verbose
+            Import-Module -Name "$($LatestModuleVersion.Path)" -Prefix "X" -Global -DisableNameChecking -Force -Verbose -ErrorAction Stop
         }
+  }
+#endregion
+
+#region Dot Source Dependency Scripts
+#Dot source any additional script(s) from the functions directory. This will provide flexibility to add additional functions without adding complexity to the main script and to maintain function consistency.
+  Try
+    {
+        If ($FunctionsDirectory.Exists -eq $True)
+          {
+              [String[]]$AdditionalFunctionsFilter = "*.ps1"
         
-        Write-Verbose "Setting registry value named $attrName to $attrVal"
-
-
-
-        New-RegistryItem -Key "$($Class)\$ID" -ValueName $attrName -Value $attrVal
-
+              $AdditionalFunctionsToImport = Get-ChildItem -Path "$($FunctionsDirectory.FullName)" -Include ($AdditionalFunctionsFilter) -Recurse -Force | Where-Object {($_ -is [System.IO.FileInfo])}
+        
+              $AdditionalFunctionsToImportCount = $AdditionalFunctionsToImport | Measure-Object | Select-Object -ExpandProperty Count
+        
+              If ($AdditionalFunctionsToImportCount -gt 0)
+                {                    
+                    ForEach ($AdditionalFunctionToImport In $AdditionalFunctionsToImport)
+                      {
+                          Try
+                            {
+                                $LogMessage = "Attempting to dot source dependency script `"$($AdditionalFunctionToImport.Name)`". Please Wait...`r`n`r`nDependency Script Path: `"$($AdditionalFunctionToImport.FullName)`""
+                                Write-Verbose -Message "$($LogMessage)" -Verbose
+                          
+                                . "$($AdditionalFunctionToImport.FullName)"
+                            }
+                          Catch
+                            {
+                                $ErrorMessage = "[Error Message: $($_.Exception.Message)]`r`n`r`n[ScriptName: $($_.InvocationInfo.ScriptName)]`r`n[Line Number: $($_.InvocationInfo.ScriptLineNumber)]`r`n[Line Position: $($_.InvocationInfo.OffsetInLine)]`r`n[Code: $($_.InvocationInfo.Line.Trim())]"
+                                Write-Error -Message "$($ErrorMessage)" -Verbose
+                            }
+                      }
+                }
+          }
     }
-}
+  Catch
+    {
+        $ErrorMessage = "[Error Message: $($_.Exception.Message)]`r`n`r`n[ScriptName: $($_.InvocationInfo.ScriptName)]`r`n[Line Number: $($_.InvocationInfo.ScriptLineNumber)]`r`n[Line Position: $($_.InvocationInfo.OffsetInLine)]`r`n[Code: $($_.InvocationInfo.Line.Trim())]"
+        Write-Error -Message "$($ErrorMessage)" -Verbose            
+    }
+#endregion
+
+#Perform script action(s)
+  Try
+    {                          
+        #Tasks defined within this block will only execute if a task sequence is running
+          If (($IsRunningTaskSequence -eq $True))
+            {            
+                  #Load any required assemblies
+                    [Void][System.Reflection.Assembly]::LoadWithPartialName("Microsoft.VisualBasic")
+            
+                  #Create an empty array to store the combined/final set of OSD variable(s)
+                    $OSDVariables = @()
+                  
+                  #Create an empty array to store the default OSD variable(s)
+                    $DefaultOSDVariables = @()
+                  
+                  #Determine if we are running within a Microsoft Deployment Toolkit or Configuration Manager task sequence based on the "_SMSTSPackageID" task sequence variable. This will only be populated within Configuration Manager task sequences, which allows for the comparison.
+                    [Boolean]$IsConfigurationManagerTaskSequence = [String]::IsNullOrEmpty($TSEnvironment.Value("_SMSTSPackageID")) -eq $False
+            
+                  #The variable(s) listed below will always get written to the storage location(s) as a standard (Default variable(s) can be specified based on whether a Microsoft Deployment Toolkit or Configuration Manager task sequence is running.
+                    If ($IsConfigurationManagerTaskSequence -eq $True)
+                      {
+                          [String]$DeploymentProduct = "SCCM"
+                      
+                          [String[]]$DefaultOSDVariableList = @(
+                                                                  "_SMSTSPackageName",
+                                                                  "_SMSTSBootImageID",
+                                                                  "_SMSTSPackageID",
+                                                                  "_SMSTSMediaType",
+                                                                  "_SMSTSSiteCode",
+                                                                  "_SMSTSLaunchMode",
+                                                                  "_SMSTSUserStarted",
+                                                                  "OSBuildVersion",
+                                                                  "_SMSTSBootUEFI",
+                                                                  "SMSDP",
+                                                                  "_SMSTSAdvertID",
+                                                                  "DeploymentMethod",
+                                                                  "_SMSTSTaskSequence"
+                                                              )
+                      }
+                    ElseIf ($IsConfigurationManagerTaskSequence -eq $False)
+                      {
+                          [String]$DeploymentProduct = "MDT"
+                      
+                          [String[]]$DefaultOSDVariableList = @(
+                                                                  "_SMSTSBootUEFI",
+                                                                  "SMSDP",
+                                                                  "InstallFromPath",
+                                                                  "TaskSequenceVersion",
+                                                                  "DeploymentMethod",
+                                                                  "DeploymentType",
+                                                                  "DeployRoot",
+                                                                  "ImageIndex",
+                                                                  "ImageFlags",
+                                                                  "ImageBuild",
+                                                                  "WDSServer",
+                                                                  "TaskSequenceID"
+                                                              )
+                      }
+                                                                                  
+                    #Always define a variable that details when the system was deployed. The timestamp is according to when this script calculated the current date/time which is converted to the destination time zone ID, then to UTC, then converted to the WMI format and stored.
+                      $ConvertedSystemTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), ($DestinationTimeZoneID))
+                      $ConvertedSystemTimeUTC = $ConvertedSystemTime.ToUniversalTime()
+                      $DefaultOSDVariables += (Set-Variable -Name "DeploymentTimestamp" -Value ([System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($ConvertedSystemTimeUTC)) -PassThru -Force -Verbose)
+            
+                    #Always define a variable that details which product deployed the task sequence
+                      $DefaultOSDVariables += (Set-Variable -Name "DeploymentProduct" -Value ($DeploymentProduct) -PassThru -Force -Verbose)
+            
+                    #Sort the default OSD variable list alphabetically and only return the unique value(s)
+                      $DefaultOSDVariableListSorted = $DefaultOSDVariableList | Sort-Object -Unique
+                      
+                    #Create a variable for each default variable specified
+                      ForEach ($DefaultOSDVariable In $DefaultOSDVariableListSorted)
+                        {
+                            #Remove all instances of invalid character(s) from the variable name(s) using a regular expression. This is to avoid potential WMI property creation error(s).
+                              $DefaultOSDVariableName = $DefaultOSDVariable -ireplace "(_)|(\s)|(\.)", ""
+                              
+                            #Retrieve the value of the task sequence variable
+                              $DefaultOSDVariableValue = $TSEnvironment.Value($DefaultOSDVariable) 
+                      
+                            #Attempt to retrieve data that can only be retrieved from within the xml definition of the task seqence, otherwise, by default, just retrieve the variable value from the task sequence com object
+                              Switch ($DefaultOSDVariable)
+                                {
+                                    {($_ -imatch '.*Date.*|.*Timestamp.*|.*Start.*Time.*|.*End.*Time.*')}
+                                      {
+                                          $DefaultOSDVariableValueAsDateTime = Get-Date -Date "$($DefaultOSDVariableValue)"
+                                          $ConvertedDefaultOSDVariableDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($DefaultOSDVariableValueAsDateTime), ($DestinationTimeZoneID))
+                                          $ConvertedDefaultOSDVariableDateTimeUTC = $ConvertedDefaultOSDVariableDateTime.ToUniversalTime()
+                                          $DefaultOSDVariableValueConverted = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($ConvertedDefaultOSDVariableDateTimeUTC)   
+                                      }
+                          
+                                    {($DefaultOSDVariableValue -imatch "^True$|^False$")}
+                                      {
+                                          $DefaultOSDVariableValueConverted = [Boolean]::Parse($DefaultOSDVariableValue)
+                                      }
+                                                    
+                                    {($DefaultOSDVariableValue -imatch "^Yes$")}
+                                      {
+                                          $DefaultOSDVariableValueConverted = [Boolean]::Parse("True")
+                                      }
+                                                    
+                                    {($DefaultOSDVariableValue -imatch "^No$")}
+                                      {
+                                          $DefaultOSDVariableValueConverted = [Boolean]::Parse("False")
+                                      }
+                                      
+                                    {([Microsoft.VisualBasic.Information]::IsNumeric($DefaultOSDVariableValue))}
+                                      {
+                                          $DefaultOSDVariableValueConverted = [Double]::Parse($DefaultOSDVariableValue)
+                                      }
+                                      
+                                    {($_ -imatch '^_SMSTSTaskSequence$') -and ($IsConfigurationManagerTaskSequence -eq $True)}
+                                      {
+                                          $TaskSequenceXMLDefinition_ImagePackageID = @(Select-Xml -Content ($DefaultOSDVariableValue) -XPath "//variable[@name='ImagePackageID']")
+                                          $DefaultOSDVariableValueConverted = "$($TaskSequenceXMLDefinition_ImagePackageID[0].Node.InnerText)"
+                                          $DefaultOSDVariables += (Set-Variable -Name "ImagePackageID" -Value ($DefaultOSDVariableValueConverted) -PassThru -Force -Verbose)
+                                      }
+                          
+                                    Default
+                                      {
+                                          $DefaultOSDVariableValueConverted = [String]::New($DefaultOSDVariableValue)
+                                      }    
+                                }
+                                
+                            $DefaultOSDVariables += (Set-Variable -Name "$($DefaultOSDVariableName)" -Value ($DefaultOSDVariableValueConverted) -PassThru -Force -Verbose) 
+                        }
+                    	                	
+                  #Add the default OSD variables to the final variable array
+                    $OSDVariables += ($DefaultOSDVariables)
+                  
+                  #Create an empty array to store the custom set of OSD variable(s)
+                    $CustomOSDVariables = @()
+            
+                  #Dynamically retrieve the additional task sequence variable(s) based on their prefix and add them to the information that will be written to either WMI, the registry, or both
+                    $RetrievedCustomOSDVariables = $TSEnvironment.GetVariables() | Where-Object {($_ -imatch "$($OSDVariablePrefix).*")}
+  
+                  #Sort the custom OSD variable list alphabetically and only return the unique value(s)
+                    $CustomOSDVariableListSorted = $RetrievedCustomOSDVariables | Sort-Object -Unique
+            
+                  #Create all the variable(s) that will be written to the system in the desired storage location
+                    ForEach ($CustomOSDVariable In $CustomOSDVariableListSorted)
+                      {
+                          #Remove the attribute prefix from the variable name(s). This is for cleaner output purposes.
+                            $CustomOSDVariableName = $CustomOSDVariable -ireplace "$($OSDVariablePrefix)", ""
+                            
+                          #Retrieve the value of the task sequence variable
+                            $CustomOSDVariableValue = $TSEnvironment.Value($CustomOSDVariable)
+                            
+                          #Attempt to format any custom variable(s) to their respective data types. This is for data consistency purposes.
+                            Switch ($CustomOSDVariable)
+                              {
+                                  {($_ -imatch '.*Date.*|.*Timestamp.*|.*Start.*Time.*|.*End.*Time.*')}
+                                    {
+                                          $CustomOSDVariableValueAsDateTime = Get-Date -Date "$($CustomOSDVariableValue)"
+                                          $ConvertedCustomOSDVariableDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId(($CustomOSDVariableValueAsDateTime), ($DestinationTimeZoneID))
+                                          $ConvertedCustomOSDVariableDateTimeUTC = $ConvertedCustomOSDVariableDateTime.ToUniversalTime()
+                                          $CustomOSDVariableValueConverted = [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($ConvertedCustomOSDVariableDateTimeUTC)  
+                                    }
+                                                                        
+                                  {($CustomOSDVariableValue -imatch "^True$|^False$")}
+                                    {
+                                        $CustomOSDVariableValueConverted = [Boolean]::Parse($CustomOSDVariableValue)
+                                    }
+                                                    
+                                  {($CustomOSDVariableValue -imatch "^Yes$")}
+                                    {
+                                        $CustomOSDVariableValueConverted = [Boolean]::Parse("True")
+                                    }
+                                                    
+                                  {($CustomOSDVariableValue -imatch "^No$")}
+                                    {
+                                        $CustomOSDVariableValueConverted = [Boolean]::Parse("False")
+                                    }
+                                    
+                                  {([Microsoft.VisualBasic.Information]::IsNumeric($CustomOSDVariableValue))}
+                                    {
+                                        $CustomOSDVariableValueConverted = [Double]::Parse($CustomOSDVariableValue)
+                                    }
+                       
+                                  Default
+                                    {
+                                        $CustomOSDVariableValueConverted = [String]::New($CustomOSDVariableValue)
+                                    }     
+                              }
+                              
+                            $CustomOSDVariables += (Set-Variable -Name "$($CustomOSDVariableName)" -Value ($CustomOSDVariableValueConverted) -PassThru -Force -Verbose)
+                      }
+                      
+                  #Attempt to automatically create a timespan between the OSD Start Time and OSD End Time (This will only occur if these custom variables exist) (This data will allow you to track how long a task sequence deployment took for a device)                    
+                    If (($CustomOSDVariables.Name -icontains "OSDStartTime") -and ($CustomOSDVariables.Name -icontains "OSDEndTime"))
+                      {                          
+                          $OSDTimeSpan = New-TimeSpan -Start ([System.Management.ManagementDateTimeConverter]::ToDateTime($OSDStartTime)) -End ([System.Management.ManagementDateTimeConverter]::ToDateTime($OSDEndTime))
+
+                          $CustomOSDVariables += (Set-Variable -Name "OSDTotalSeconds" -Value ([System.Math]::Round($OSDTimeSpan.TotalSeconds, 2)) -PassThru -Force -Verbose)
+                          $CustomOSDVariables += (Set-Variable -Name "OSDTotalMinutes" -Value ([System.Math]::Round($OSDTimeSpan.TotalMinutes, 2)) -PassThru -Force -Verbose)
+                          $CustomOSDVariables += (Set-Variable -Name "OSDTotalHours" -Value ([System.Math]::Round($OSDTimeSpan.TotalHours, 2)) -PassThru -Force -Verbose)
+                      }
+     
+                  #Add the custom OSD variables to the final variable array
+                    $OSDVariables += ($CustomOSDVariables)
+                    
+                  #Only write the collected data if the variable(s) were successfully created and populated in the OSDVariables array
+                    If ($OSDVariables -ine $Null)
+                      {
+                          #If specified, write the OSD information to a new or existing registry key
+                            If ($Registry.IsPresent -eq $True)
+                              {
+                                  ForEach ($OSDVariable in $OSDVariables)
+                                    {
+                                        $OSDVariableName = "$($OSDVariable.Name)"
+                                
+                                        If ($OSDVariable.Value -ine $Null) 
+                                          {
+                                              $OSDVariableValue = ($OSDVariable.Value -Join ", ").ToString().Trim()
+                                          } 
+                                        Else 
+                                          {
+                                              $OSDVariableValue = ""
+                                          }
+        
+                                        New-RegistryItem -Key "$($RegistryKeyPath)" -ValueName "$($OSDVariableName)" -Value ($OSDVariableValue)
+                                    }
+                              }
+                      
+                          #If specified, write the OSD information to a new or existing WMI class. The class will be removed and recreated if it exists!
+                            If ($WMI.IsPresent -eq $True)
+                              {
+                                  If (!(Get-XWMINamespace -Namespace "$($Namespace)" -ErrorAction SilentlyContinue))
+                                    {
+                                        New-XWMINamespace -Namespace "$($Namespace)" -CreateSubTree
+                                    }
+                                
+                                  If (Get-XWMIClass -Namespace "$($Namespace)" -ClassName "$($Class)" -ErrorAction SilentlyContinue)
+                                    {
+                                        Remove-XWMIClass -NameSpace "$($Namespace)" -ClassName "$($Class)"
+                                    }
+                            
+                                  If (!(Get-XWMIClass -Namespace "$($Namespace)" -ClassName "$($Class)" -ErrorAction SilentlyContinue))
+                                    {
+                                        [Hashtable]$ClassQualifiers = @{
+                                                                          Static = $True;
+                                                                          Description = "$($ClassDescription)"
+                                                                       }
+                                                                            
+                                        $WMIClassObject = New-XWMIClass -NameSpace "$($Namespace)" -ClassName "$($Class)" -Qualifiers ($ClassQualifiers) -CreateDestination  
+                                    }
+                                    
+                                  #Add properties to the newly created WMI Class, set their individual data types, and set their individual values
+                                    ForEach ($OSDVariable In $OSDVariables)
+                                      {
+                                          [String]$OSDVariableName = $OSDVariable.Name
+                                          
+                                          [String]$OSDVariableType = "$($OSDVariable.Value.GetType().Name)"
+                                          
+                                          $OSDVariableValue = ($OSDVariable.Value -Join ", ").ToString().Trim()
+                                          
+                                          #Attempt to specify data type before adding the property to the WMI class
+                                          #Valid values are the following: None, SInt16, SInt32, Real32, Real64, String, Boolean, Object, SInt8, UInt8, UInt16, UInt32, SInt64, UInt64, DateTime, Reference, Char16 (Example: [System.Management.CimType]::GetNames([System.Management.CimType]))
+                                            Switch ($OSDVariableType)
+                                              {
+                                                  {($_ -imatch '.*Date.*') -or ($OSDVariableName -imatch '.*Date.*|.*Timestamp.*|.*Start.*Time.*|.*End.*Time.*')}
+                                                    {
+                                                        $PropertyType = "DateTime"
+                                                    }
+                                                  
+                                                  {($_ -imatch 'Bool|Boolean')}
+                                                    {
+                                                        $PropertyType = "Boolean"
+                                                    }
+                                                    
+                                                  {($_ -imatch 'Double')}
+                                                    {
+                                                        $PropertyType = "Real64"
+                                                    }
+                                                                                                        
+                                                  Default
+                                                    {
+                                                        $PropertyType = "String"
+                                                    }     
+                                              }
+                                                                                    
+                                          $Null = New-XWMIProperty -NameSpace "$($Namespace)" -ClassName "$($Class)" -PropertyName "$($OSDVariableName)" -PropertyType "$($PropertyType)"
+                                                                                                                               
+                                          [WMIClass]$GetWMIClass = Get-WMIObject -NameSpace "$($Namespace)" -Class "$($Class)" -List
+         
+                                          $Null = $GetWMIClass.SetPropertyValue($OSDVariableName, $OSDVariableValue)
+            
+                                          $Null = $GetWMIClass.Put()
+                                      }
+                                      
+                                    Write-Output -InputObject ((Get-WMIObject -NameSpace "$($Namespace)" -Class "$($Class)" -List).Properties)    
+                              }    
+                      }
+                    Else
+                      {
+                          $WarningMessage = "The powershell variable `"OSDVariables`" contains no properties or values. No further action will be taken."
+                          Write-Warning -Message "$($WarningMessage)" -Verbose
+                      }
+            }
+
+        #Tasks defined here will execute whether a task sequence is running or not
+          ###Place the code here
+
+        #Tasks defined here will execute whether only if a task sequence is not running
+          If ($IsRunningTaskSequence -eq $False)
+            {
+                $WarningMessage = "There is no task sequence running.`r`n"
+                Write-Warning -Message "$($WarningMessage)" -Verbose
+            }
+            
+        #Stop transcripting (Logging)
+          Try
+            {
+                Stop-Transcript -Verbose
+            }
+          Catch
+            {
+                If ([String]::IsNullOrEmpty($_.Exception.Message)) {$ExceptionMessage = "$($_.Exception.Errors.Message)"} Else {$ExceptionMessage = "$($_.Exception.Message)"}
+          
+                $ErrorMessage = "[Error Message: $($ExceptionMessage)][ScriptName: $($_.InvocationInfo.ScriptName)][Line Number: $($_.InvocationInfo.ScriptLineNumber)][Line Position: $($_.InvocationInfo.OffsetInLine)][Code: $($_.InvocationInfo.Line.Trim())]"
+                Write-Error -Message "$($ErrorMessage)"
+            }
+    }
+  Catch
+    {
+        If ([String]::IsNullOrEmpty($_.Exception.Message)) {$ExceptionMessage = "$($_.Exception.Errors.Message -Join "`r`n`r`n")"} Else {$ExceptionMessage = "$($_.Exception.Message)"}
+          
+        $ErrorMessage = "[Error Message: $($ExceptionMessage)]`r`n`r`n[ScriptName: $($_.InvocationInfo.ScriptName)]`r`n[Line Number: $($_.InvocationInfo.ScriptLineNumber)]`r`n[Line Position: $($_.InvocationInfo.OffsetInLine)]`r`n[Code: $($_.InvocationInfo.Line.Trim())]`r`n"
+        If ($ContinueOnError.IsPresent -eq $False) {Throw "$($ErrorMessage)"}
+    }
